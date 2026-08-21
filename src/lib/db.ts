@@ -32,46 +32,69 @@ import fs from "fs";
 
 const DB_PATH = process.env.LEARNIEE_DB_PATH ?? path.join(process.cwd(), ".data", "dev.db");
 
+// If the configured path can't be used, fall back to a file inside the
+// app's own working directory rather than an in-memory database. This
+// matters a lot here: `start:prod` runs the seed script and the actual web
+// server as two *separate* Node processes. An in-memory database is
+// private to a single process, so if seeding fell back to `:memory:`, the
+// data it wrote would vanish the instant that process exited -- the web
+// server's own (also in-memory) database would come up empty every time,
+// which looks exactly like "seeding doesn't work" even though it ran
+// successfully. A real file on disk, even a non-persistent one inside the
+// container's ephemeral filesystem, is at least shared by every process in
+// that same running instance, so the app actually works correctly for the
+// lifetime of that instance -- it just won't survive a redeploy until
+// LEARNIEE_DB_PATH points at somewhere genuinely writable.
+const FALLBACK_DB_PATH = path.join(process.cwd(), ".data-fallback", "dev.db");
+
 declare global {
   var __learnieeDb: DatabaseSync | undefined;
 }
 
-function createConnection() {
+function tryOpen(dbPath: string): DatabaseSync {
+  const dir = path.dirname(dbPath);
+  // Only attempt to create the directory if it doesn't already exist. On
+  // some platforms (Render's mounted disks in particular), the mount root
+  // already exists but the app's process isn't permitted to run mkdir
+  // against it directly -- even though reading/writing files inside it
+  // works fine. Skipping the redundant mkdir avoids that EACCES entirely.
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const database = new DatabaseSync(dbPath);
+  database.exec("PRAGMA journal_mode = DELETE;");
+  database.exec("PRAGMA foreign_keys = ON;");
+  return database;
+}
+
+function createConnection(): DatabaseSync {
   try {
-    const dir = path.dirname(DB_PATH);
-    // Only attempt to create the directory if it doesn't already exist.
-    // On some platforms (Render's mounted disks in particular), the mount
-    // root already exists but the app's process isn't permitted to run
-    // mkdir against it directly -- even though reading/writing files
-    // inside it works fine. Skipping the redundant mkdir avoids that
-    // EACCES entirely instead of trying to fall back gracefully from it.
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    const database = new DatabaseSync(DB_PATH);
-    database.exec("PRAGMA journal_mode = DELETE;");
-    database.exec("PRAGMA foreign_keys = ON;");
+    const database = tryOpen(DB_PATH);
+    console.log(`[learniee] Database ready at "${DB_PATH}".`);
     return database;
-  } catch (err) {
-    // Some hosting platforms (Render, Railway, etc.) only attach a
-    // persistent disk to the *running* service -- not to the build step.
-    // Next.js's "collect page data" build phase imports every route module
-    // to statically analyze it, which runs this file's top-level `db`
-    // export even though no query actually executes yet. If the disk isn't
-    // mounted at build time, LEARNIEE_DB_PATH's directory won't exist and
-    // mkdir/open will throw, crashing the build entirely. Fall back to an
-    // in-memory database in that case so module evaluation always
-    // succeeds; the real persistent path is used normally once the app is
-    // actually running with its disk mounted (which is what matters).
+  } catch (primaryErr) {
     console.warn(
-      `[learniee] Could not open database at "${DB_PATH}" (falling back to an in-memory database for this process). ` +
-        "This is expected during some build steps where a persistent disk isn't mounted yet; " +
-        "if you see this while the app is actually running, check that LEARNIEE_DB_PATH points at a writable, mounted directory.",
-      err
+      `[learniee] Could not open database at "${DB_PATH}" -- falling back to "${FALLBACK_DB_PATH}". ` +
+        "Data will work correctly for this running instance, but won't survive a redeploy until " +
+        "LEARNIEE_DB_PATH points at somewhere genuinely writable (check your platform's persistent " +
+        "disk/volume configuration and permissions).",
+      primaryErr
     );
-    const database = new DatabaseSync(":memory:");
-    database.exec("PRAGMA foreign_keys = ON;");
-    return database;
+    try {
+      return tryOpen(FALLBACK_DB_PATH);
+    } catch (fallbackErr) {
+      // Last resort: this should be extremely rare (it means even the
+      // app's own working directory isn't writable), but still don't crash.
+      console.error(
+        `[learniee] Could not open fallback database at "${FALLBACK_DB_PATH}" either -- using an ` +
+          "in-memory database. Nothing will persist, and separate processes (e.g. the seed script " +
+          "and the web server) will not share data.",
+        fallbackErr
+      );
+      const database = new DatabaseSync(":memory:");
+      database.exec("PRAGMA foreign_keys = ON;");
+      return database;
+    }
   }
 }
 
