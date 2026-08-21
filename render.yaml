@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: learniee
+    runtime: node
+    plan: starter
+    region: oregon
+    buildCommand: npm install && npm run build
+    # Seed only runs if the DB file doesn't exist yet -- see package.json's
+    # "start:prod" script. Safe to redeploy without wiping existing data.
+    startCommand: npm run start:prod
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LEARNIEE_DB_PATH
+        value: /data/dev.db
+    disk:
+      name: learniee-data
+      mountPath: /data
+      sizeGB: 1
