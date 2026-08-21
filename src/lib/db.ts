@@ -37,11 +37,33 @@ declare global {
 }
 
 function createConnection() {
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  const database = new DatabaseSync(DB_PATH);
-  database.exec("PRAGMA journal_mode = DELETE;");
-  database.exec("PRAGMA foreign_keys = ON;");
-  return database;
+  try {
+    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+    const database = new DatabaseSync(DB_PATH);
+    database.exec("PRAGMA journal_mode = DELETE;");
+    database.exec("PRAGMA foreign_keys = ON;");
+    return database;
+  } catch (err) {
+    // Some hosting platforms (Render, Railway, etc.) only attach a
+    // persistent disk to the *running* service -- not to the build step.
+    // Next.js's "collect page data" build phase imports every route module
+    // to statically analyze it, which runs this file's top-level `db`
+    // export even though no query actually executes yet. If the disk isn't
+    // mounted at build time, LEARNIEE_DB_PATH's directory won't exist and
+    // mkdir/open will throw, crashing the build entirely. Fall back to an
+    // in-memory database in that case so module evaluation always
+    // succeeds; the real persistent path is used normally once the app is
+    // actually running with its disk mounted (which is what matters).
+    console.warn(
+      `[learniee] Could not open database at "${DB_PATH}" (falling back to an in-memory database for this process). ` +
+        "This is expected during some build steps where a persistent disk isn't mounted yet; " +
+        "if you see this while the app is actually running, check that LEARNIEE_DB_PATH points at a writable, mounted directory.",
+      err
+    );
+    const database = new DatabaseSync(":memory:");
+    database.exec("PRAGMA foreign_keys = ON;");
+    return database;
+  }
 }
 
 export const db = global.__learnieeDb ?? createConnection();
