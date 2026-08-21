@@ -13,6 +13,11 @@ services:
         value: production
       - key: LEARNIEE_DB_PATH
         value: /data/dev.db
+      # Some Node 22.x point releases still require this flag for the
+      # built-in node:sqlite module (it was dropped in later 22.x patches).
+      # Passing it is harmless on versions that no longer need it.
+      - key: NODE_OPTIONS
+        value: --experimental-sqlite
     disk:
       name: learniee-data
       mountPath: /data
