@@ -38,7 +38,16 @@ declare global {
 
 function createConnection() {
   try {
-    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+    const dir = path.dirname(DB_PATH);
+    // Only attempt to create the directory if it doesn't already exist.
+    // On some platforms (Render's mounted disks in particular), the mount
+    // root already exists but the app's process isn't permitted to run
+    // mkdir against it directly -- even though reading/writing files
+    // inside it works fine. Skipping the redundant mkdir avoids that
+    // EACCES entirely instead of trying to fall back gracefully from it.
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
     const database = new DatabaseSync(DB_PATH);
     database.exec("PRAGMA journal_mode = DELETE;");
     database.exec("PRAGMA foreign_keys = ON;");
